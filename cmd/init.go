@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/spf13/cobra"
 )
 
@@ -25,7 +26,25 @@ var initCmd = &cobra.Command{
 	SilenceUsage: true,
 }
 
+const (
+	VanillaFlag       = "vanilla"
+	VanillaRemoteName = "gbwf"
+	VanillaRemoteURL  = "https://github.com/gbwf-dev/vanilla.git"
+
+	DepthFlag = "depth"
+	Depth     = 1
+)
+
+func init() {
+	rootCmd.AddCommand(initCmd)
+	initCmd.Flags().StringP(VanillaFlag, string(VanillaFlag[0]), VanillaRemoteURL, "sets the vanilla remote to pull from")
+	initCmd.Flags().IntP(DepthFlag, string(DepthFlag[0]), Depth, "limit fetch depth to N commits (shallow clone/pull)")
+}
+
 func RunE(cmd *cobra.Command, args []string) error {
+	stdin := cmd.InOrStdin()
+	stdout := cmd.OutOrStdout()
+
 	// Get current working directory
 	dir, err := os.Getwd()
 	if err != nil {
@@ -45,15 +64,15 @@ func RunE(cmd *cobra.Command, args []string) error {
 		prompt := components.NewYesNo("GBWF needs a git repository, do you want to initialize one?")
 		program := tea.NewProgram(
 			prompt,
-			tea.WithOutput(cmd.OutOrStdout()),
-			tea.WithInput(cmd.InOrStdin()),
+			tea.WithOutput(stdout),
+			tea.WithInput(stdin),
 		)
 		if _, err := program.Run(); err != nil {
 			return fmt.Errorf("prompt failed: %w", err)
 		}
 
 		if !prompt.GetResult() {
-			fmt.Fprintln(cmd.OutOrStdout(), "Repository initialization cancelled")
+			fmt.Fprintln(stdout, "Repository initialization cancelled")
 			return nil
 		}
 
@@ -66,21 +85,39 @@ func RunE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to open git repository: %w", err)
 	}
 
-	fmt.Fprintln(cmd.OutOrStdout(), "Git repository ready at:", targetDir, repo)
+	fmt.Fprintln(stdout, "Git repository ready at:", targetDir, repo)
 
-	return nil
-}
+	flags := cmd.Flags()
 
-func init() {
-	rootCmd.AddCommand(initCmd)
+	var vanillaURL string
+	vanillaURL, err = flags.GetString(VanillaFlag)
+	if err != nil {
+		return err
+	}
 
-	// Here you will define your flags and configuration settings.
+	var vanilla *git.Remote
+	remoteConfig := &config.RemoteConfig{Name: VanillaRemoteName, URLs: []string{vanillaURL}}
+	vanilla, err = repo.CreateRemote(remoteConfig)
+	if err != nil {
+		return err
+	}
 
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// initCmd.PersistentFlags().String("foo", "", "A help for foo")
+	fmt.Fprintf(stdout, "Pulling from %s %s...\n", vanilla.Config().Name, vanillaURL)
+	wt, err := repo.Worktree()
+	if err != nil {
+		return err
+	}
 
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// initCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	var depth int
+	depth, err = cmd.Flags().GetInt(DepthFlag)
+	if err != nil {
+		return err
+	}
+
+	return wt.Pull(&git.PullOptions{
+		RemoteName:   remoteConfig.Name,
+		SingleBranch: true,
+		Depth:        depth,
+		Progress:     stdout,
+	})
 }
