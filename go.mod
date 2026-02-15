@@ -1,4 +1,4 @@
-module cli
+module gbwf
 
 go 1.25.7
 

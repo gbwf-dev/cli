@@ -1,14 +1,12 @@
-/*
-Copyright © 2026 NAME HERE <EMAIL ADDRESS>
-*/
 package cmd
 
 import (
-	"cli/components"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"gbwf/components"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/go-git/go-git/v5"
@@ -66,6 +64,7 @@ func RunE(cmd *cobra.Command, args []string) error {
 			prompt,
 			tea.WithOutput(stdout),
 			tea.WithInput(stdin),
+			tea.WithContext(cmd.Context()),
 		)
 		if _, err := program.Run(); err != nil {
 			return fmt.Errorf("prompt failed: %w", err)
