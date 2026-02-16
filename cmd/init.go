@@ -1,17 +1,18 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"gbwf/components"
+	"gbwf/manifest"
+	"gbwf/source"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 // initCmd represents the init command
@@ -19,15 +20,15 @@ var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a GBWF App",
 	Long:  `Starts the cli process`,
-	RunE:  RunE,
+
+	RunE: RunE,
 
 	SilenceUsage: true,
 }
 
 const (
-	VanillaFlag       = "vanilla"
-	VanillaRemoteName = "gbwf"
-	VanillaRemoteURL  = "https://github.com/gbwf-dev/vanilla.git"
+	ManifestFlag = "manifest"
+	Manifest     = "https://raw.githubusercontent.com/gbwf-dev/cli/refs/heads/feature/manifest/manifest.yaml"
 
 	DepthFlag = "depth"
 	Depth     = 1
@@ -35,13 +36,30 @@ const (
 
 func init() {
 	rootCmd.AddCommand(initCmd)
-	initCmd.Flags().StringP(VanillaFlag, string(VanillaFlag[0]), VanillaRemoteURL, "sets the vanilla remote to pull from")
+	initCmd.Flags().StringP(ManifestFlag, string(ManifestFlag[0]), Manifest, "sets the manifest")
 	initCmd.Flags().IntP(DepthFlag, string(DepthFlag[0]), Depth, "limit fetch depth to N commits (shallow clone/pull)")
 }
 
 func RunE(cmd *cobra.Command, args []string) error {
-	stdin := cmd.InOrStdin()
-	stdout := cmd.OutOrStdout()
+	flags := cmd.Flags()
+
+	manifestFlag, err := flags.GetString(ManifestFlag)
+	if err != nil {
+		return err
+	}
+
+	reader, err := source.Resolve(manifestFlag)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	decodedManifest := new(manifest.Manifest)
+
+	err = yaml.NewDecoder(reader).Decode(decodedManifest)
+	if err != nil {
+		return err
+	}
 
 	// Get current working directory
 	dir, err := os.Getwd()
@@ -55,68 +73,38 @@ func RunE(cmd *cobra.Command, args []string) error {
 		targetDir = args[0]
 	}
 
-	// Try opening existing Git repository
-	repo, err := git.PlainOpen(filepath.Join(targetDir, ".git"))
-	if errors.Is(err, git.ErrRepositoryNotExists) {
-		// Prompt user to initialize a new repository
-		prompt := components.NewYesNo("GBWF needs a git repository, do you want to initialize one?")
-		program := tea.NewProgram(
-			prompt,
-			tea.WithOutput(stdout),
-			tea.WithInput(stdin),
-			tea.WithContext(cmd.Context()),
-		)
-		if _, err := program.Run(); err != nil {
-			return fmt.Errorf("prompt failed: %w", err)
-		}
-
-		if !prompt.GetResult() {
-			fmt.Fprintln(stdout, "Repository initialization cancelled")
-			return nil
-		}
-
-		// Initialize a new Git repository
-		repo, err = git.PlainInit(targetDir, false)
-		if err != nil {
-			return fmt.Errorf("failed to initialize git repository: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("failed to open git repository: %w", err)
-	}
-
-	fmt.Fprintln(stdout, "Git repository ready at:", targetDir, repo)
-
-	flags := cmd.Flags()
-
-	var vanillaURL string
-	vanillaURL, err = flags.GetString(VanillaFlag)
+	var repo *git.Repository
+	repo, err = git.PlainInit(targetDir, false)
 	if err != nil {
 		return err
 	}
 
-	var vanilla *git.Remote
-	remoteConfig := &config.RemoteConfig{Name: VanillaRemoteName, URLs: []string{vanillaURL}}
-	vanilla, err = repo.CreateRemote(remoteConfig)
-	if err != nil {
+	stdin := cmd.InOrStdin()
+	stdout := cmd.OutOrStdout()
+
+	var bases []manifest.Base
+	for _, base := range decodedManifest.Base {
+		bases = append(bases, base)
+	}
+	selector := components.NewBaseSelector(bases...)
+	program := tea.NewProgram(
+		selector,
+		tea.WithInput(stdin),
+		tea.WithOutput(stdout),
+		tea.WithContext(cmd.Context()),
+	)
+	if _, err = program.Run(); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(stdout, "Pulling from %s %s...\n", vanilla.Config().Name, vanillaURL)
-	wt, err := repo.Worktree()
-	if err != nil {
-		return err
+	base := selector.Selected()
+	if base == nil {
+		return nil
 	}
 
-	var depth int
-	depth, err = cmd.Flags().GetInt(DepthFlag)
-	if err != nil {
-		return err
-	}
-
-	return wt.Pull(&git.PullOptions{
-		RemoteName:   remoteConfig.Name,
-		SingleBranch: true,
-		Depth:        depth,
-		Progress:     stdout,
+	repo.CreateRemote(&config.RemoteConfig{
+		Name: "origin",
 	})
+
+	return err
 }

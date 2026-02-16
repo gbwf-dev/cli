@@ -1,8 +1,20 @@
 base:
   vanilla:
+    # Name you want to display on CLI
     name: Vanilla JS
+
+    # Source Git repository. available drivers: file://, http://, http://
     source: https://github.com/gbwf-dev/vanilla.git
+
+    # ANSI color to display in CLI (Optional)
+    color: 3 # Yellow
 
   solid:
     name: Solid JS
     source: https://github.com/gbwf-dev/solid.git
+    color: 4 # Blue
+
+plugins:
+  database:
+    name: GORM
+    source: https://github.com/gbwf-dev/database.git
