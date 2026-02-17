@@ -61,7 +61,7 @@ func (m *BaseSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
-		m.list.SetSize(msg.Width, (msg.Height/2)-2)
+		m.list.SetSize(msg.Width, msg.Height-2)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -74,6 +74,7 @@ func (m *BaseSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if selected, ok := m.list.SelectedItem().(baseItem); ok {
 				value := manifest.Base(selected)
 				m.selected = &value
+				m.list.SetSize(0, 0)
 				return m, tea.Quit
 			}
 		}

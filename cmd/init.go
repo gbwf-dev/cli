@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -82,13 +83,9 @@ func RunE(cmd *cobra.Command, args []string) error {
 	stdin := cmd.InOrStdin()
 	stdout := cmd.OutOrStdout()
 
-	var bases []manifest.Base
-	for _, base := range decodedManifest.Base {
-		bases = append(bases, base)
-	}
-	selector := components.NewBaseSelector(bases...)
+	baseSelector := components.NewBaseSelector(decodedManifest.Base...)
 	program := tea.NewProgram(
-		selector,
+		baseSelector,
 		tea.WithInput(stdin),
 		tea.WithOutput(stdout),
 		tea.WithContext(cmd.Context()),
@@ -97,14 +94,94 @@ func RunE(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	base := selector.Selected()
+	base := baseSelector.Selected()
 	if base == nil {
 		return nil
 	}
 
-	repo.CreateRemote(&config.RemoteConfig{
+	var origin *git.Remote
+	origin, err = repo.CreateRemote(&config.RemoteConfig{
 		Name: "origin",
+		URLs: []string{base.Source},
 	})
+	if err != nil {
+		return err
+	}
+
+	err = repo.Fetch(&git.FetchOptions{
+		RemoteName: origin.Config().Name,
+		Progress:   stdout,
+	})
+	if err != nil {
+		return err
+	}
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return err
+	}
+
+	// Get the remote reference
+	ref, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", "master"), true)
+	if err != nil {
+		return fmt.Errorf("remote reference not found: %w", err)
+	}
+
+	// Checkout a local branch 'master' pointing to origin/master
+	err = worktree.Checkout(&git.CheckoutOptions{
+		Branch: plumbing.NewBranchReferenceName("master"), // local branch
+		Create: true,                                      // create it
+		Hash:   ref.Hash(),                                // point to remote commit
+	})
+	if err != nil {
+		return err
+	}
+
+	pluginSelector := components.NewBaseMultiSelector(decodedManifest.Plugins...)
+	program = tea.NewProgram(
+		pluginSelector,
+		tea.WithInput(stdin),
+		tea.WithOutput(stdout),
+		tea.WithContext(cmd.Context()),
+	)
+
+	if _, err = program.Run(); err != nil {
+		return err
+	}
+
+	selectedPlugins := pluginSelector.Selected()
+	for index, plugin := range selectedPlugins {
+		remoteName := fmt.Sprintf("plugin-%d", index)
+
+		remote, err := repo.CreateRemote(&config.RemoteConfig{
+			Name: remoteName,
+			URLs: []string{plugin.Source},
+		})
+		if err != nil {
+			return err
+		}
+
+		// Fetch the remote
+		err = remote.Fetch(&git.FetchOptions{
+			RemoteName: remoteName,
+			Progress:   stdout,
+		})
+		if err != nil && err != git.NoErrAlreadyUpToDate {
+			return err
+		}
+
+		// var pluginRef *plumbing.Reference
+		// pluginRef, err = repo.Reference(plumbing.NewRemoteReferenceName(remoteName, "master"), true)
+		// if err != nil {
+		// 	return fmt.Errorf("remote branch not found: %w", err)
+		// }
+
+		// err = ort.Merge(repo, *pluginRef)
+		// if err != nil {
+		// 	return err
+		// }
+		// fmt.Fprintln(stdout, remote)
+	}
 
 	return err
 }
