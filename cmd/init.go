@@ -6,12 +6,19 @@ import (
 
 	"gbwf/components"
 	"gbwf/manifest"
+	"gbwf/ort"
 	"gbwf/source"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-billy/v6/memfs"
+	"github.com/go-git/go-billy/v6/osfs"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/cache"
+	"github.com/go-git/go-git/v6/storage"
+	"github.com/go-git/go-git/v6/storage/filesystem"
+	"github.com/go-git/go-git/v6/storage/memory"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -31,14 +38,14 @@ const (
 	ManifestFlag = "manifest"
 	Manifest     = "https://raw.githubusercontent.com/gbwf-dev/cli/refs/heads/feature/manifest/manifest.yaml"
 
-	DepthFlag = "depth"
-	Depth     = 1
+	DryRunFlag = "dry-run"
+	DryRun     = false
 )
 
 func init() {
 	rootCmd.AddCommand(initCmd)
 	initCmd.Flags().StringP(ManifestFlag, string(ManifestFlag[0]), Manifest, "sets the manifest")
-	initCmd.Flags().IntP(DepthFlag, string(DepthFlag[0]), Depth, "limit fetch depth to N commits (shallow clone/pull)")
+	initCmd.Flags().Bool(DryRunFlag, DryRun, "perform a trial run with no changes made to filesystem")
 }
 
 func RunE(cmd *cobra.Command, args []string) error {
@@ -53,7 +60,7 @@ func RunE(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	decodedManifest := new(manifest.Manifest)
 
@@ -62,20 +69,40 @@ func RunE(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Get current working directory
-	dir, err := os.Getwd()
+	err = decodedManifest.Validate()
 	if err != nil {
-		return fmt.Errorf("failed to get current directory: %w", err)
+		return err
 	}
 
-	// Determine the target directory (use first arg if provided, else current dir)
-	targetDir := dir
-	if len(args) > 0 && args[0] != "" {
-		targetDir = args[0]
+	var dryRun bool
+	dryRun, err = flags.GetBool(DryRunFlag)
+	if err != nil {
+		return err
+	}
+
+	var storer storage.Storer = memory.NewStorage()
+	worktree := memfs.New()
+
+	if !dryRun {
+		// Get current working directory
+		dir, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get current directory: %w", err)
+		}
+
+		// Determine the target directory (use first arg if provided, else current dir)
+		targetDir := dir
+		if len(args) > 0 && args[0] != "" {
+			targetDir = args[0]
+		}
+
+		worktree = osfs.New(targetDir)
+		dot, _ := worktree.Chroot(git.GitDirName)
+		storer = filesystem.NewStorage(dot, cache.NewObjectLRUDefault())
 	}
 
 	var repo *git.Repository
-	repo, err = git.PlainInit(targetDir, false)
+	repo, err = git.Init(storer, git.WithWorkTree(worktree))
 	if err != nil {
 		return err
 	}
@@ -102,7 +129,7 @@ func RunE(cmd *cobra.Command, args []string) error {
 	var origin *git.Remote
 	origin, err = repo.CreateRemote(&config.RemoteConfig{
 		Name: "origin",
-		URLs: []string{base.Source},
+		URLs: []string{base.Remote.Source},
 	})
 	if err != nil {
 		return err
@@ -116,23 +143,23 @@ func RunE(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	worktree, err := repo.Worktree()
+	var wt *git.Worktree
+	wt, err = repo.Worktree()
 	if err != nil {
 		return err
 	}
 
+	if base.Remote.Ref == "" {
+		base.Remote.Ref = "master"
+	}
+
 	// Get the remote reference
-	ref, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", "master"), true)
+	ref, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", base.Remote.Ref), true)
 	if err != nil {
 		return fmt.Errorf("remote reference not found: %w", err)
 	}
 
-	// Checkout a local branch 'master' pointing to origin/master
-	err = worktree.Checkout(&git.CheckoutOptions{
-		Branch: plumbing.NewBranchReferenceName("master"), // local branch
-		Create: true,                                      // create it
-		Hash:   ref.Hash(),                                // point to remote commit
-	})
+	err = wt.Checkout(&git.CheckoutOptions{Branch: ref.Name()})
 	if err != nil {
 		return err
 	}
@@ -151,36 +178,44 @@ func RunE(cmd *cobra.Command, args []string) error {
 
 	selectedPlugins := pluginSelector.Selected()
 	for index, plugin := range selectedPlugins {
-		remoteName := fmt.Sprintf("plugin-%d", index)
+
+		if plugin.Remote.Name == "" {
+			plugin.Remote.Name = fmt.Sprintf("plugin-%d", index)
+		}
 
 		remote, err := repo.CreateRemote(&config.RemoteConfig{
-			Name: remoteName,
-			URLs: []string{plugin.Source},
+			Name: plugin.Remote.Name,
+			URLs: []string{plugin.Remote.Source},
 		})
 		if err != nil {
 			return err
 		}
 
 		// Fetch the remote
+		fmt.Fprintf(stdout, "Fetching from %s/%s\n", plugin.Remote.Name, plugin.Remote.Ref)
 		err = remote.Fetch(&git.FetchOptions{
-			RemoteName: remoteName,
+			RemoteName: plugin.Remote.Name,
 			Progress:   stdout,
 		})
 		if err != nil && err != git.NoErrAlreadyUpToDate {
 			return err
 		}
 
-		// var pluginRef *plumbing.Reference
-		// pluginRef, err = repo.Reference(plumbing.NewRemoteReferenceName(remoteName, "master"), true)
-		// if err != nil {
-		// 	return fmt.Errorf("remote branch not found: %w", err)
-		// }
+		if plugin.Remote.Ref == "" {
+			plugin.Remote.Ref = "master"
+		}
 
-		// err = ort.Merge(repo, *pluginRef)
-		// if err != nil {
-		// 	return err
-		// }
-		// fmt.Fprintln(stdout, remote)
+		var pluginRef *plumbing.Reference
+		pluginRef, err = repo.Reference(plumbing.NewRemoteReferenceName(remote.Config().Name, plugin.Remote.Ref), true)
+		if err != nil {
+			return fmt.Errorf("remote branch not found: %w", err)
+		}
+
+		// err = repo.Merge(*pluginRef, git.MergeOptions{}) // WIP
+		err = ort.Merge(repo, *pluginRef, ort.MergeOptions{})
+		if err != nil {
+			return err
+		}
 	}
 
 	return err

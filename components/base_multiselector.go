@@ -37,7 +37,7 @@ func (mbd multiBaseItemDelegate) Render(w io.Writer, m list.Model, index int, li
 		char = "●"
 	}
 
-	fmt.Fprint(w, fn(char, item.Name))
+	_, _ = fmt.Fprint(w, fn(char, item.Name))
 
 }
 

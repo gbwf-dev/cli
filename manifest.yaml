@@ -2,28 +2,41 @@ base:
   # Name you want to display on CLI
   - name: Vanilla JS
 
-    # Source Git repository. available drivers: file://, http://, http://
-    source: https://github.com/gbwf-dev/vanilla.git
+    remote:
+      # Name of the remote
+      name: "origin"
 
-    # Source Git Ref (optional) (default: "master")
-    ref: master
+      # Source Git repository. available drivers: file://, http://, http://
+      source: https://github.com/gbwf-dev/vanilla.git
 
-    # ANSI color to display in CLI (optional, default: 7)
+      # Source Git Ref (optional) (default: "master")
+      ref: master
+
+    # ANSI color to display in CLI (optional, default: 7 = white)
     color: 3 # Yellow
 
   - name: Solid JS
-    source: https://github.com/gbwf-dev/solid.git
+    remote:
+      source: https://github.com/gbwf-dev/solid.git
+      ref: master
+      name: "plugin-solid"
+
     color: 4 # Blue
 
 plugins:
-  - name: Database (no driver)
-    source: https://github.com/gbwf-dev/database.git
-    ref: master
+  - name: GORM (no driver)
+    remote:
+      source: https://github.com/gbwf-dev/database.git
+      name: database
+      ref: master
 
-  - name: SQLite
-    source: https://github.com/gbwf-dev/database.git
-    ref: sqlite
+  - name: GORM SQLite
+    remote:
+      source: https://github.com/gbwf-dev/database.git
+      name: plugin-sqlite
+      ref: sqlite
 
-  - name: PostgreSQL
-    source: https://github.com/gbwf-dev/database.git
-    ref: postgresql
+  - name: GORM PostgreSQL
+    remote:
+      source: https://github.com/gbwf-dev/database.git
+      ref: postgresql

@@ -17,9 +17,8 @@ type BaseSelector struct {
 
 type baseItem manifest.Base
 
-func (i baseItem) FilterValue() string { return i.Name + " " + i.Source }
+func (i baseItem) FilterValue() string { return i.Remote.Name }
 func (i baseItem) Title() string       { return i.Name }
-func (i baseItem) Description() string { return i.Source }
 
 type baseItemDelegate struct{}
 
@@ -38,7 +37,7 @@ func (baseItemDelegate) Render(w io.Writer, m list.Model, index int, listItem li
 		fn = func(s ...string) string { return "> " + style.Render(s...) }
 	}
 
-	fmt.Fprint(w, fn(i.Name))
+	_, _ = fmt.Fprint(w, fn(i.Name))
 }
 
 func NewBaseSelector(bases ...manifest.Base) *BaseSelector {
