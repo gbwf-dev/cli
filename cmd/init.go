@@ -192,7 +192,7 @@ func RunE(cmd *cobra.Command, args []string) error {
 		}
 
 		// Fetch the remote
-		fmt.Fprintf(stdout, "Fetching from %s/%s\n", plugin.Remote.Name, plugin.Remote.Ref)
+		_, _ = fmt.Fprintf(stdout, "Fetching from %s/%s\n", plugin.Remote.Name, plugin.Remote.Ref)
 		err = remote.Fetch(&git.FetchOptions{
 			RemoteName: plugin.Remote.Name,
 			Progress:   stdout,
