@@ -27,6 +27,7 @@ var ErrMergeConflict = errors.New("merge conflict")
 type MergeOptions struct {
 	Strategy               git.MergeStrategy
 	OrtMergeStrategyOption git.OrtMergeStrategyOption
+	Progress               io.Writer
 }
 
 func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
@@ -56,6 +57,7 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 
 	case FastForwardMerge:
 		if ff {
+			_, _ = fmt.Fprintf(opts.Progress, "Updating %s...%s\nFast-forward\n", head.Hash(), ref.Hash())
 			return r.Storer.SetReference(plumbing.NewHashReference(head.Name(), ref.Hash()))
 		}
 		fallthrough
@@ -142,7 +144,6 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 
 			// Only our file has changed
 			if pair.ours != nil && pair.theirs == nil {
-				fmt.Println(filepath, err, pair.ours)
 				action, err := pair.ours.Action()
 				if err != nil {
 					return err
@@ -151,7 +152,7 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 				switch action {
 
 				case merkletrie.Insert, merkletrie.Modify:
-					base, ours, err = pair.ours.Files()
+					_, ours, err = pair.ours.Files()
 					if err != nil {
 						return err
 					}
@@ -193,7 +194,7 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 
 				switch action {
 				case merkletrie.Insert, merkletrie.Modify:
-					base, theirs, err = pair.theirs.Files()
+					_, theirs, err = pair.theirs.Files()
 					if err != nil {
 						return err
 					}
@@ -237,11 +238,6 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					return err
 				}
 
-				// // If they made the same changes
-				if ours.Blob.Hash == theirs.Blob.Hash {
-					continue // Skip
-				}
-
 				var ourAction, theirAction merkletrie.Action
 				ourAction, err = pair.ours.Action()
 				if err != nil {
@@ -258,14 +254,20 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 				// Added or Modified by both
 				case ourAction == merkletrie.Modify && theirAction == merkletrie.Modify,
 					ourAction == merkletrie.Insert && theirAction == merkletrie.Insert:
-					baseReader, err = base.Blob.Reader()
+
+					// // If they made the same changes
+					if ours.Hash == theirs.Hash {
+						continue // Skip
+					}
+
+					baseReader, err = base.Reader()
 					if err != nil {
 						return err
 					}
 					defer func() { _ = baseReader.Close() }()
 
 					var oursReader io.ReadCloser
-					oursReader, err = ours.Blob.Reader()
+					oursReader, err = ours.Reader()
 					if err != nil {
 						return err
 					}
@@ -276,7 +278,7 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 						return err
 					}
 
-					theirsReader, err = theirs.Blob.Reader()
+					theirsReader, err = theirs.Reader()
 					if err != nil {
 						return err
 					}
@@ -325,8 +327,7 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					if err != nil {
 						return err
 					}
-					_, err = io.Copy(dst, oursReader)
-					if err != nil {
+					if _, err = io.Copy(dst, oursReader); err != nil {
 						return err
 					}
 					if _, err = w.Add(filepath); err != nil {
@@ -377,12 +378,13 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 			},
 		)
 
+		_, _ = fmt.Fprintln(opts.Progress, "Merge made by the 'ort' strategy.")
+
 		return err
 
 	default:
 		return git.ErrUnsupportedMergeStrategy
 	}
-
 }
 
 func isFastForward(s storer.EncodedObjectStorer, old, newHash plumbing.Hash, earliestShallow *plumbing.Hash) (bool, error) {

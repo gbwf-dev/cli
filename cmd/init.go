@@ -145,7 +145,7 @@ func RunE(cmd *cobra.Command, args []string) error {
 	var origin *git.Remote
 	origin, err = repo.CreateRemote(&config.RemoteConfig{
 		Name: "origin",
-		URLs: []string{base.Remote.Source},
+		URLs: []string{base.Remote.URL},
 	})
 	if err != nil {
 		return err
@@ -196,13 +196,11 @@ func RunE(cmd *cobra.Command, args []string) error {
 
 		remote, err := repo.CreateRemote(&config.RemoteConfig{
 			Name: plugin.Remote.Name,
-			URLs: []string{plugin.Remote.Source},
+			URLs: []string{plugin.Remote.URL},
 		})
 		if err != nil {
 			return err
 		}
-
-		_, _ = fmt.Fprintf(stdout, "Fetching from %s/%s\n", plugin.Remote.Name, plugin.Remote.Ref)
 
 		// Fetch the remote
 		err = remote.Fetch(&git.FetchOptions{
@@ -216,11 +214,13 @@ func RunE(cmd *cobra.Command, args []string) error {
 		var pluginRef *plumbing.Reference
 		pluginRef, err = repo.Reference(plumbing.NewRemoteReferenceName(remote.Config().Name, plugin.Remote.Ref), true)
 		if err != nil {
-			return fmt.Errorf("remote branch not found: %w", err)
+			return err
 		}
 
 		// err = repo.Merge(*pluginRef, git.MergeOptions{}) // WIP
-		err = ort.Merge(repo, *pluginRef, ort.MergeOptions{})
+		err = ort.Merge(repo, *pluginRef, ort.MergeOptions{
+			Progress: progress,
+		})
 		if err != nil {
 			return err
 		}

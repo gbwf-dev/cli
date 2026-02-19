@@ -7,14 +7,14 @@ type Validate interface {
 }
 
 type Remote struct {
-	Source string `yaml:"source"`
-	Name   string `yaml:"name"`
-	Ref    string `yaml:"ref"`
+	URL  string `yaml:"url"`
+	Name string `yaml:"name"`
+	Ref  string `yaml:"ref"`
 }
 
 func (remote *Remote) Validate() error {
-	if remote.Source == "" {
-		return fmt.Errorf("remote.source cannot be empty")
+	if remote.URL == "" {
+		return fmt.Errorf("remote.url cannot be empty")
 	}
 	return nil
 }

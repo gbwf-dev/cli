@@ -155,80 +155,80 @@ func diffComm(file1, file2 []string) []*resultStruct {
 	return result
 }
 
-type chunkDescription struct {
-	offset int
-	length int
-	chunk  []string
-}
+// type chunkDescription struct {
+// 	offset int
+// 	length int
+// 	chunk  []string
+// }
 
-type patch struct {
-	file1 *chunkDescription
-	file2 *chunkDescription
-}
+// type patch struct {
+// 	file1 *chunkDescription
+// 	file2 *chunkDescription
+// }
 
 // We apply the LCD to build a JSON representation of a
 // diff(1)-style patch.
-func diffPatch(file1, file2 []string) []*patch {
-	var result []*patch
-	var tail1 = len(file1)
-	var tail2 = len(file2)
+// func diffPatch(file1, file2 []string) []*patch {
+// 	var result []*patch
+// 	var tail1 = len(file1)
+// 	var tail2 = len(file2)
 
-	cd := func(file []string, offset int, length int) *chunkDescription {
-		var chunk []string
-		for i := 0; i < length; i++ {
-			chunk = append(chunk, file[offset+i])
-		}
-		return &chunkDescription{
-			offset: offset,
-			length: length,
-			chunk:  chunk,
-		}
-	}
+// 	cd := func(file []string, offset int, length int) *chunkDescription {
+// 		var chunk []string
+// 		for i := 0; i < length; i++ {
+// 			chunk = append(chunk, file[offset+i])
+// 		}
+// 		return &chunkDescription{
+// 			offset: offset,
+// 			length: length,
+// 			chunk:  chunk,
+// 		}
+// 	}
 
-	for candidate := lcs(file1, file2); candidate != nil; candidate = candidate.chain {
-		mismatchLength1 := tail1 - candidate.file1index - 1
-		mismatchLength2 := tail2 - candidate.file2index - 1
-		tail1 = candidate.file1index
-		tail2 = candidate.file2index
+// 	for candidate := lcs(file1, file2); candidate != nil; candidate = candidate.chain {
+// 		mismatchLength1 := tail1 - candidate.file1index - 1
+// 		mismatchLength2 := tail2 - candidate.file2index - 1
+// 		tail1 = candidate.file1index
+// 		tail2 = candidate.file2index
 
-		if mismatchLength1 != 0 || mismatchLength2 != 0 {
-			result = append(result, &patch{
-				file1: cd(file1, candidate.file1index+1, mismatchLength1),
-				file2: cd(file2, candidate.file2index+1, mismatchLength2),
-			})
-		}
-	}
+// 		if mismatchLength1 != 0 || mismatchLength2 != 0 {
+// 			result = append(result, &patch{
+// 				file1: cd(file1, candidate.file1index+1, mismatchLength1),
+// 				file2: cd(file2, candidate.file2index+1, mismatchLength2),
+// 			})
+// 		}
+// 	}
 
-	slices.Reverse(result)
-	return result
-}
+// 	slices.Reverse(result)
+// 	return result
+// }
 
 // Takes the output of diffPatch(), and removes
 // information from it. It can still be used by patch(),
 // below, but can no longer be inverted.
-func stripPatch(p []*patch) []*patch {
-	var newpatch []*patch
-	for i := 0; i < len(p); i++ {
-		chunk := p[i]
-		newpatch = append(newpatch, &patch{
-			file1: &chunkDescription{offset: chunk.file1.offset, length: chunk.file1.length},
-			file2: &chunkDescription{chunk: chunk.file2.chunk},
-		})
-	}
-	return newpatch
-}
+// func stripPatch(p []*patch) []*patch {
+// 	var newpatch []*patch
+// 	for i := 0; i < len(p); i++ {
+// 		chunk := p[i]
+// 		newpatch = append(newpatch, &patch{
+// 			file1: &chunkDescription{offset: chunk.file1.offset, length: chunk.file1.length},
+// 			file2: &chunkDescription{chunk: chunk.file2.chunk},
+// 		})
+// 	}
+// 	return newpatch
+// }
 
 // Takes the output of diffPatch(), and inverts the
 // sense of it, so that it can be applied to file2 to give
 // file1 rather than the other way around.
-func invertPatch(p []*patch) {
-	for i := 0; i < len(p); i++ {
-		chunk := p[i]
-		tmp := chunk.file1
-		chunk.file1 = chunk.file2
-		chunk.file2 = tmp
-	}
-}
+// func invertPatch(p []*patch) {
+// 	for i := 0; i < len(p); i++ {
+// 		chunk := p[i]
+// 		tmp := chunk.file1
+// 		chunk.file1 = chunk.file2
+// 		chunk.file2 = tmp
+// 	}
+// }
 
 // Applies a applyPatch to a file.
 //
@@ -237,29 +237,29 @@ func invertPatch(p []*patch) {
 //	applyPatch(file1, diffPatch(file1, file2))
 //
 // should give file2.
-func applyPatch(file []string, p []*patch) []string {
-	var result []string
-	commonOffset := 0
+// func applyPatch(file []string, p []*patch) []string {
+// 	var result []string
+// 	commonOffset := 0
 
-	copyCommon := func(targetOffset int) {
-		for commonOffset < targetOffset {
-			result = append(result, file[commonOffset])
-			commonOffset++
-		}
-	}
+// 	copyCommon := func(targetOffset int) {
+// 		for commonOffset < targetOffset {
+// 			result = append(result, file[commonOffset])
+// 			commonOffset++
+// 		}
+// 	}
 
-	for chunkIndex := 0; chunkIndex < len(p); chunkIndex++ {
-		chunk := p[chunkIndex]
-		copyCommon(chunk.file1.offset)
-		for lineIndex := 0; lineIndex < len(chunk.file2.chunk); lineIndex++ {
-			result = append(result, chunk.file2.chunk[lineIndex])
-		}
-		commonOffset += chunk.file1.length
-	}
+// 	for chunkIndex := 0; chunkIndex < len(p); chunkIndex++ {
+// 		chunk := p[chunkIndex]
+// 		copyCommon(chunk.file1.offset)
+// 		for lineIndex := 0; lineIndex < len(chunk.file2.chunk); lineIndex++ {
+// 			result = append(result, chunk.file2.chunk[lineIndex])
+// 		}
+// 		commonOffset += chunk.file1.length
+// 	}
 
-	copyCommon(len(file))
-	return result
-}
+// 	copyCommon(len(file))
+// 	return result
+// }
 
 type diffIndicesResult struct {
 	file1 []int
