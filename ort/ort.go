@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	"gbwf/ort/diff3"
 
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/format/index"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/storer"
 	"github.com/go-git/go-git/v6/utils/merkletrie"
@@ -32,6 +34,7 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 	if err != nil {
 		return err
 	}
+
 	// Ignore error as not having a shallow list is optional here.
 	shallowList, _ := r.Storer.Shallow()
 	var earliestShallow *plumbing.Hash
@@ -107,31 +110,39 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 		})
 
 		for _, change := range baseToOurs {
-			pair := changes[change.To.Name]
+			path := change.To.Name
+			if path == "" {
+				path = change.From.Name
+			}
+			pair := changes[path]
 			pair.ours = change
-			changes[change.To.Name] = pair
+			changes[path] = pair
 		}
 
 		for _, change := range baseToTheirs {
-			pair := changes[change.To.Name]
+			path := change.To.Name
+			if path == "" {
+				path = change.From.Name
+			}
+			pair := changes[path]
 			pair.theirs = change
-			changes[change.To.Name] = pair
+			changes[path] = pair
 		}
-		delete(changes, "")
 
 		w, err := r.Worktree()
 		if err != nil {
 			return err
 		}
 
-		hasConflicts := false
+		mergeHasConflict := false
 
-		for filename, pair := range changes {
+		for filepath, pair := range changes {
 			var base, ours, theirs *object.File
 			var baseReader, oursReader, theirsReader io.ReadCloser
 
 			// Only our file has changed
 			if pair.ours != nil && pair.theirs == nil {
+				fmt.Println(filepath, err, pair.ours)
 				action, err := pair.ours.Action()
 				if err != nil {
 					return err
@@ -140,7 +151,6 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 				switch action {
 
 				case merkletrie.Insert, merkletrie.Modify:
-
 					base, ours, err = pair.ours.Files()
 					if err != nil {
 						return err
@@ -152,18 +162,23 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					}
 
 					var dst io.Writer
-					dst, err = w.Filesystem.Create(filename)
+					dst, err = w.Filesystem.Create(filepath)
 					if err != nil {
 						return err
 					}
-					_, err = io.Copy(dst, oursReader)
-					if err != nil {
+					if _, err = io.Copy(dst, oursReader); err != nil {
+						return err
+					}
+					if _, err = w.Add(filepath); err != nil {
 						return err
 					}
 
 				// Our file was deleted
 				case merkletrie.Delete:
-					if err = w.Filesystem.Remove(filename); err != nil {
+					if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
+						return err
+					}
+					if _, err = w.Remove(filepath); err != nil && !errors.Is(err, index.ErrEntryNotFound) {
 						return err
 					}
 				}
@@ -189,18 +204,23 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					}
 
 					var dst io.Writer
-					dst, err := w.Filesystem.Create(filename)
+					dst, err := w.Filesystem.Create(filepath)
 					if err != nil {
 						return err
 					}
-
-					_, err = io.Copy(dst, theirsReader)
-					if err != nil {
+					if _, err = io.Copy(dst, theirsReader); err != nil {
+						return err
+					}
+					if _, err = w.Add(filepath); err != nil {
 						return err
 					}
 
+				// Their file has been deleted
 				case merkletrie.Delete:
-					if err = w.Filesystem.Remove(filename); err != nil {
+					if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
+						return err
+					}
+					if _, err = w.Remove(filepath); err != nil && !errors.Is(err, index.ErrEntryNotFound) {
 						return err
 					}
 				}
@@ -212,15 +232,15 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 				if err != nil {
 					return err
 				}
-				base, theirs, err = pair.theirs.Files()
+				_, theirs, err = pair.theirs.Files()
 				if err != nil {
 					return err
 				}
 
 				// // If they made the same changes
-				// if ours.Blob == theirs.Blob {
-				// 	continue // Skip
-				// }
+				if ours.Blob.Hash == theirs.Blob.Hash {
+					continue // Skip
+				}
 
 				var ourAction, theirAction merkletrie.Action
 				ourAction, err = pair.ours.Action()
@@ -267,29 +287,36 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 						return err
 					}
 
-					file, err := w.Filesystem.Create(filename)
+					file, err := w.Filesystem.Create(filepath)
 					if err != nil {
 						return err
 					}
 					defer func() { _ = file.Close() }()
 
-					_, err = io.Copy(file, mergeResult.Result)
-					if err != nil {
+					if _, err = io.Copy(file, mergeResult.Result); err != nil {
 						return err
 					}
+					if !mergeResult.Conflicts {
+						if _, err = w.Add(filepath); err != nil {
+							return err
+						}
+					}
 
-					hasConflicts = hasConflicts || mergeResult.Conflicts
+					mergeHasConflict = mergeHasConflict || mergeResult.Conflicts
 
-				// Deleted by both
+					// Deleted by both
 				case ourAction == merkletrie.Delete && theirAction == merkletrie.Delete:
-					if err = w.Filesystem.Remove(filename); err != nil {
+					if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
+						return err
+					}
+					if _, err = w.Remove(filepath); err != nil && !errors.Is(err, index.ErrEntryNotFound) {
 						return err
 					}
 
-				// Inserted / Modified by us, deleted by them
+					// Inserted / Modified by us, deleted by them
 				case (ourAction == merkletrie.Insert || ourAction == merkletrie.Modify) && theirAction == merkletrie.Delete:
 					var dst io.Writer
-					dst, err = w.Filesystem.Create(filename)
+					dst, err = w.Filesystem.Create(filepath)
 					if err != nil {
 						return err
 					}
@@ -302,10 +329,13 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					if err != nil {
 						return err
 					}
+					if _, err = w.Add(filepath); err != nil {
+						return err
+					}
 
-				// Inserted / Modified by them, deleted by us
+					// Inserted / Modified by them, deleted by us
 				case (theirAction == merkletrie.Insert || theirAction == merkletrie.Modify) && ourAction == merkletrie.Delete:
-					dstFile, err := w.Filesystem.Create(filename)
+					dstFile, err := w.Filesystem.Create(filepath)
 					if err != nil {
 						return err
 					}
@@ -314,25 +344,38 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					if err != nil {
 						return err
 					}
-					_, err = io.Copy(dstFile, theirsReader)
-					if err != nil {
+					if _, err = io.Copy(dstFile, theirsReader); err != nil {
+						return err
+					}
+					if _, err = w.Add(filepath); err != nil {
 						return err
 					}
 				}
 			}
+
 		}
 
-		if hasConflicts {
+		if mergeHasConflict {
 			return ErrMergeConflict
 		}
-		// _, err = w.Commit(
-		// 	fmt.Sprintf("Merge ... with %s", ref.Name()),
-		// 	&git.CommitOptions{
-		// 		Author:    &oursCommit.Author,
-		// 		Committer: &oursCommit.Committer,
-		// 		Parents:   []plumbing.Hash{oursCommit.Hash, theirsCommit.Hash},
-		// 	},
-		// )
+
+		status, err := w.Status()
+		if err != nil {
+			return err
+		}
+
+		if status.IsClean() {
+			return nil
+		}
+
+		_, err = w.Commit(
+			fmt.Sprintf("Merge ... with %s", ref.Name()),
+			&git.CommitOptions{
+				Author:    &oursCommit.Author,
+				Committer: &oursCommit.Committer,
+				Parents:   []plumbing.Hash{oursCommit.Hash, theirsCommit.Hash},
+			},
+		)
 
 		return err
 
