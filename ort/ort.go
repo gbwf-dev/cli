@@ -127,6 +127,9 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 		hasConflicts := false
 
 		for filename, pair := range changes {
+			var base, ours, theirs *object.File
+			var baseReader, oursReader, theirsReader io.ReadCloser
+
 			// Only our file has changed
 			if pair.ours != nil && pair.theirs == nil {
 				action, err := pair.ours.Action()
@@ -137,34 +140,30 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 				switch action {
 
 				case merkletrie.Insert, merkletrie.Modify:
-					_, to, err := pair.ours.Files()
-					if err != nil {
-						return err
-					}
-					content, err := to.Contents()
+
+					base, ours, err = pair.ours.Files()
 					if err != nil {
 						return err
 					}
 
-					dstFile, err := w.Filesystem.Create(filename)
+					oursReader, err = ours.Reader()
 					if err != nil {
 						return err
 					}
-					_, err = dstFile.Write([]byte(content))
+
+					var dst io.Writer
+					dst, err = w.Filesystem.Create(filename)
 					if err != nil {
 						return err
 					}
-					if _, err := w.Add(filename); err != nil {
+					_, err = io.Copy(dst, oursReader)
+					if err != nil {
 						return err
 					}
 
 				// Our file was deleted
 				case merkletrie.Delete:
-					err = w.Filesystem.Remove(filename)
-					if err != nil {
-						return err
-					}
-					if _, err = w.Remove(filename); err != nil {
+					if err = w.Filesystem.Remove(filename); err != nil {
 						return err
 					}
 				}
@@ -179,33 +178,29 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 
 				switch action {
 				case merkletrie.Insert, merkletrie.Modify:
-					_, to, err := pair.theirs.Files()
-					if err != nil {
-						return err
-					}
-					content, err := to.Contents()
+					base, theirs, err = pair.theirs.Files()
 					if err != nil {
 						return err
 					}
 
-					dstFile, err := w.Filesystem.Create(filename)
+					theirsReader, err = theirs.Reader()
 					if err != nil {
 						return err
 					}
-					_, err = dstFile.Write([]byte(content))
+
+					var dst io.Writer
+					dst, err := w.Filesystem.Create(filename)
 					if err != nil {
 						return err
 					}
-					if _, err = w.Add(filename); err != nil {
+
+					_, err = io.Copy(dst, theirsReader)
+					if err != nil {
 						return err
 					}
 
 				case merkletrie.Delete:
-					err = w.Filesystem.Remove(filename)
-					if err != nil {
-						return err
-					}
-					if _, err = w.Remove(filename); err != nil {
+					if err = w.Filesystem.Remove(filename); err != nil {
 						return err
 					}
 				}
@@ -213,7 +208,6 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 
 			// Both changed the file
 			if pair.ours != nil && pair.theirs != nil {
-				var base, ours, theirs *object.File
 				base, ours, err = pair.ours.Files()
 				if err != nil {
 					return err
@@ -223,17 +217,18 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					return err
 				}
 
-				// If they made the same changes
-				if ours.Blob == theirs.Blob {
-					continue // Skip
-				}
+				// // If they made the same changes
+				// if ours.Blob == theirs.Blob {
+				// 	continue // Skip
+				// }
 
-				ourAction, err := pair.ours.Action()
+				var ourAction, theirAction merkletrie.Action
+				ourAction, err = pair.ours.Action()
 				if err != nil {
 					return err
 				}
 
-				theirAction, err := pair.theirs.Action()
+				theirAction, err = pair.theirs.Action()
 				if err != nil {
 					return err
 				}
@@ -243,7 +238,6 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 				// Added or Modified by both
 				case ourAction == merkletrie.Modify && theirAction == merkletrie.Modify,
 					ourAction == merkletrie.Insert && theirAction == merkletrie.Insert:
-					var baseReader io.ReadCloser
 					baseReader, err = base.Blob.Reader()
 					if err != nil {
 						return err
@@ -262,7 +256,6 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 						return err
 					}
 
-					var theirsReader io.ReadCloser
 					theirsReader, err = theirs.Blob.Reader()
 					if err != nil {
 						return err
@@ -285,12 +278,6 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 						return err
 					}
 
-					if !mergeResult.Conflicts {
-						if _, err = w.Add(filename); err != nil {
-							return err
-						}
-					}
-
 					hasConflicts = hasConflicts || mergeResult.Conflicts
 
 				// Deleted by both
@@ -298,26 +285,21 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					if err = w.Filesystem.Remove(filename); err != nil {
 						return err
 					}
-					if _, err = w.Remove(filename); err != nil {
-						return err
-					}
 
 				// Inserted / Modified by us, deleted by them
 				case (ourAction == merkletrie.Insert || ourAction == merkletrie.Modify) && theirAction == merkletrie.Delete:
-					dstFile, err := w.Filesystem.Create(filename)
+					var dst io.Writer
+					dst, err = w.Filesystem.Create(filename)
 					if err != nil {
 						return err
 					}
-					var oursReader io.ReadCloser
+
 					oursReader, err = ours.Reader()
 					if err != nil {
 						return err
 					}
-					_, err = io.Copy(dstFile, oursReader)
+					_, err = io.Copy(dst, oursReader)
 					if err != nil {
-						return err
-					}
-					if _, err := w.Add(filename); err != nil {
 						return err
 					}
 
@@ -336,9 +318,6 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					if err != nil {
 						return err
 					}
-					if _, err := w.Add(filename); err != nil {
-						return err
-					}
 				}
 			}
 		}
@@ -346,14 +325,14 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 		if hasConflicts {
 			return ErrMergeConflict
 		}
-		_, err = w.Commit(
-			"Merge",
-			&git.CommitOptions{
-				Author:    &oursCommit.Author,
-				Committer: &oursCommit.Committer,
-				Parents:   []plumbing.Hash{oursCommit.Hash, theirsCommit.Hash},
-			},
-		)
+		// _, err = w.Commit(
+		// 	fmt.Sprintf("Merge ... with %s", ref.Name()),
+		// 	&git.CommitOptions{
+		// 		Author:    &oursCommit.Author,
+		// 		Committer: &oursCommit.Committer,
+		// 		Parents:   []plumbing.Hash{oursCommit.Hash, theirsCommit.Hash},
+		// 	},
+		// )
 
 		return err
 

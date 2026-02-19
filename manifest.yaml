@@ -2,41 +2,41 @@ base:
   # Name you want to display on CLI
   - name: Vanilla JS
 
+    # ANSI color to display in CLI (optional, default: 7 = white)
+    color: 3 # Yellow
+
+    # Remote parameters
     remote:
       # Name of the remote
       name: "origin"
 
-      # Source Git repository. available drivers: file://, http://, http://
-      source: https://github.com/gbwf-dev/vanilla.git
+      # Remote Git repository. available drivers: file://, http://, http://
+      url: https://github.com/gbwf-dev/vanilla.git
 
-      # Source Git Ref (optional) (default: "master")
+      # Remote Git Ref (optional) (default: "master")
       ref: master
-
-    # ANSI color to display in CLI (optional, default: 7 = white)
-    color: 3 # Yellow
 
   - name: Solid JS
-    remote:
-      source: https://github.com/gbwf-dev/solid.git
-      ref: master
-      name: "plugin-solid"
-
     color: 4 # Blue
+    remote:
+      name: "plugin-solid"
+      url: https://github.com/gbwf-dev/solid.git
+      ref: master
+
+  - name: Tanstack Solid Router
+    remote:
+      url: https://github.com/gbwf-dev/solid.git
+      ref: tanstack/router
+      name: "plugin-tanstack-solid-router"
 
 plugins:
-  - name: GORM (no driver)
-    remote:
-      source: https://github.com/gbwf-dev/database.git
-      name: database
-      ref: master
-
   - name: GORM SQLite
     remote:
-      source: https://github.com/gbwf-dev/database.git
+      url: https://github.com/gbwf-dev/database.git
       name: plugin-sqlite
       ref: sqlite
 
   - name: GORM PostgreSQL
     remote:
-      source: https://github.com/gbwf-dev/database.git
+      url: https://github.com/gbwf-dev/database.git
       ref: postgresql
