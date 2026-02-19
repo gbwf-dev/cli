@@ -37,7 +37,7 @@ var initCmd = &cobra.Command{
 
 const (
 	ManifestFlag = "manifest"
-	Manifest     = "https://raw.githubusercontent.com/gbwf-dev/cli/refs/heads/feature/manifest/manifest.yaml"
+	Manifest     = "https://raw.githubusercontent.com/gbwf-dev/cli/refs/heads/master/manifest.yaml"
 
 	DryRunFlag = "dry-run"
 	DryRun     = false
