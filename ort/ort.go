@@ -36,6 +36,22 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 		return err
 	}
 
+	theirsCommit, err := r.CommitObject(ref.Hash())
+	if err != nil {
+		return err
+	}
+
+	oursCommit, err := r.CommitObject(head.Hash())
+	if err != nil {
+		return err
+	}
+
+	var patch *object.Patch
+	patch, err = oursCommit.Patch(theirsCommit)
+	if err != nil {
+		return err
+	}
+
 	// Ignore error as not having a shallow list is optional here.
 	shallowList, _ := r.Storer.Shallow()
 	var earliestShallow *plumbing.Hash
@@ -53,26 +69,23 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 		if !ff {
 			return git.ErrFastForwardMergeNotPossible
 		}
+		_, _ = fmt.Fprintln(opts.Progress, patch.Stats())
 		return r.Storer.SetReference(plumbing.NewHashReference(head.Name(), ref.Hash()))
 
 	case FastForwardMerge:
 		if ff {
-			_, _ = fmt.Fprintf(opts.Progress, "Updating %s...%s\nFast-forward\n", head.Hash(), ref.Hash())
+			_, _ = fmt.Fprintf(
+				opts.Progress,
+				"Updating %s...%s\nFast-forward\n%s",
+				head.Hash().String()[:7],
+				ref.Hash().String()[:7],
+				patch.Stats(),
+			)
 			return r.Storer.SetReference(plumbing.NewHashReference(head.Name(), ref.Hash()))
 		}
 		fallthrough
 
 	case OrtMerge:
-		theirsCommit, err := r.CommitObject(ref.Hash())
-		if err != nil {
-			return err
-		}
-
-		oursCommit, err := r.CommitObject(head.Hash())
-		if err != nil {
-			return err
-		}
-
 		baseCommits, err := oursCommit.MergeBase(theirsCommit)
 		if err != nil {
 			return err
@@ -91,6 +104,7 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 		if err != nil {
 			return err
 		}
+
 		theirsTree, err := theirsCommit.Tree()
 		if err != nil {
 			return err
@@ -369,7 +383,8 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 			return nil
 		}
 
-		_, err = w.Commit(
+		var newHash plumbing.Hash
+		newHash, err = w.Commit(
 			fmt.Sprintf("Merge ... with %s", ref.Name()),
 			&git.CommitOptions{
 				Author:    &oursCommit.Author,
@@ -378,13 +393,23 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 			},
 		)
 
-		_, _ = fmt.Fprintln(opts.Progress, "Merge made by the 'ort' strategy.")
+		var newCommit *object.Commit
+		newCommit, err = r.CommitObject(newHash)
+		if err != nil {
+			return err
+		}
 
-		return err
+		patch, err = oursCommit.Patch(newCommit)
+		if err != nil {
+			return err
+		}
 
+		_, _ = fmt.Fprintf(opts.Progress, "Merge made by the 'ort' strategy.\n%s", patch.Stats())
 	default:
 		return git.ErrUnsupportedMergeStrategy
 	}
+
+	return err
 }
 
 func isFastForward(s storer.EncodedObjectStorer, old, newHash plumbing.Hash, earliestShallow *plumbing.Hash) (bool, error) {
