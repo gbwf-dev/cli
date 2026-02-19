@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"gbwf/components"
@@ -40,12 +41,16 @@ const (
 
 	DryRunFlag = "dry-run"
 	DryRun     = false
+
+	VerboseFlag = "verbose"
+	Verbose     = false
 )
 
 func init() {
 	rootCmd.AddCommand(initCmd)
 	initCmd.Flags().StringP(ManifestFlag, string(ManifestFlag[0]), Manifest, "sets the manifest")
 	initCmd.Flags().Bool(DryRunFlag, DryRun, "perform a trial run with no changes made to filesystem")
+	initCmd.Flags().Bool(VerboseFlag, Verbose, "runs in verbose mode")
 }
 
 func RunE(cmd *cobra.Command, args []string) error {
@@ -108,7 +113,18 @@ func RunE(cmd *cobra.Command, args []string) error {
 	}
 
 	stdin := cmd.InOrStdin()
+
 	stdout := cmd.OutOrStdout()
+
+	var verbose bool
+	verbose, err = flags.GetBool(VerboseFlag)
+	if err != nil {
+		return err
+	}
+	progress := io.Discard
+	if verbose {
+		progress = stdout
+	}
 
 	baseSelector := components.NewBaseSelector(decodedManifest.Base...)
 	program := tea.NewProgram(
@@ -137,7 +153,7 @@ func RunE(cmd *cobra.Command, args []string) error {
 
 	err = repo.Fetch(&git.FetchOptions{
 		RemoteName: origin.Config().Name,
-		Progress:   stdout,
+		Progress:   progress,
 	})
 	if err != nil {
 		return err
@@ -149,14 +165,10 @@ func RunE(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if base.Remote.Ref == "" {
-		base.Remote.Ref = "master"
-	}
-
 	// Get the remote reference
 	ref, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", base.Remote.Ref), true)
 	if err != nil {
-		return fmt.Errorf("remote reference not found: %w", err)
+		return err
 	}
 
 	err = wt.Checkout(&git.CheckoutOptions{Branch: ref.Name()})
@@ -178,7 +190,6 @@ func RunE(cmd *cobra.Command, args []string) error {
 
 	selectedPlugins := pluginSelector.Selected()
 	for index, plugin := range selectedPlugins {
-
 		if plugin.Remote.Name == "" {
 			plugin.Remote.Name = fmt.Sprintf("plugin-%d", index)
 		}
@@ -191,18 +202,15 @@ func RunE(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		// Fetch the remote
 		_, _ = fmt.Fprintf(stdout, "Fetching from %s/%s\n", plugin.Remote.Name, plugin.Remote.Ref)
+
+		// Fetch the remote
 		err = remote.Fetch(&git.FetchOptions{
 			RemoteName: plugin.Remote.Name,
-			Progress:   stdout,
+			Progress:   progress,
 		})
 		if err != nil && err != git.NoErrAlreadyUpToDate {
 			return err
-		}
-
-		if plugin.Remote.Ref == "" {
-			plugin.Remote.Ref = "master"
 		}
 
 		var pluginRef *plumbing.Reference
@@ -216,7 +224,9 @@ func RunE(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+
 	}
 
-	return err
+	return nil
+	// return wt.Reset(&git.ResetOptions{Mode: git.SoftReset})
 }
