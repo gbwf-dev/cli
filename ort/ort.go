@@ -4,10 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 
 	"gbwf/ort/diff3"
-
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/format/index"
@@ -22,7 +20,14 @@ const (
 	OrtMerge
 )
 
-var ErrMergeConflict = errors.New("merge conflict")
+const (
+	MERGE_HEAD plumbing.ReferenceName = "MERGE_HEAD"
+)
+
+var (
+	ErrUnrelatedHistories = errors.New("no common ancestor: unrelated histories")
+	ErrMergeConflict      = errors.New("merge conflict")
+)
 
 type MergeOptions struct {
 	Strategy               git.MergeStrategy
@@ -92,7 +97,7 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 		}
 
 		if len(baseCommits) < 1 {
-			return fmt.Errorf("unable to merge with different history")
+			return ErrUnrelatedHistories
 		}
 
 		baseTree, err := baseCommits[0].Tree()
@@ -164,7 +169,6 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 				}
 
 				switch action {
-
 				case merkletrie.Insert, merkletrie.Modify:
 					_, ours, err = pair.ours.Files()
 					if err != nil {
@@ -190,10 +194,13 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 
 				// Our file was deleted
 				case merkletrie.Delete:
-					if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
-						return err
-					}
-					if _, err = w.Remove(filepath); err != nil && !errors.Is(err, index.ErrEntryNotFound) {
+					// if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
+					// 	return err
+					// }
+					if _, err = w.Remove(
+						filepath,
+					); err != nil &&
+						!errors.Is(err, index.ErrEntryNotFound) {
 						return err
 					}
 				}
@@ -232,10 +239,14 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 
 				// Their file has been deleted
 				case merkletrie.Delete:
-					if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
-						return err
-					}
-					if _, err = w.Remove(filepath); err != nil && !errors.Is(err, index.ErrEntryNotFound) {
+					// if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
+					// 	return err
+					// }
+
+					if _, err = w.Remove(
+						filepath,
+					); err != nil &&
+						!errors.Is(err, index.ErrEntryNotFound) {
 						return err
 					}
 				}
@@ -264,12 +275,11 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 				}
 
 				switch {
-
 				// Added or Modified by both
 				case ourAction == merkletrie.Modify && theirAction == merkletrie.Modify,
 					ourAction == merkletrie.Insert && theirAction == merkletrie.Insert:
 
-					// // If they made the same changes
+					//  If they made the same changes
 					if ours.Hash == theirs.Hash {
 						continue // Skip
 					}
@@ -298,7 +308,14 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					}
 					defer func() { _ = theirsReader.Close() }()
 
-					mergeResult, err := diff3.Merge(oursReader, baseReader, theirsReader, true, head.Name().Short(), ref.Name().Short())
+					mergeResult, err := diff3.Merge(
+						oursReader,
+						baseReader,
+						theirsReader,
+						true,
+						head.Name().Short(),
+						ref.Name().Short(),
+					)
 					if err != nil {
 						return err
 					}
@@ -312,6 +329,7 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					if _, err = io.Copy(file, mergeResult.Result); err != nil {
 						return err
 					}
+
 					if !mergeResult.Conflicts {
 						if _, err = w.Add(filepath); err != nil {
 							return err
@@ -320,12 +338,15 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 
 					mergeHasConflict = mergeHasConflict || mergeResult.Conflicts
 
-					// Deleted by both
+				// Deleted by both
 				case ourAction == merkletrie.Delete && theirAction == merkletrie.Delete:
-					if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
-						return err
-					}
-					if _, err = w.Remove(filepath); err != nil && !errors.Is(err, index.ErrEntryNotFound) {
+					// if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
+					// 	return err
+					// }
+					if _, err = w.Remove(
+						filepath,
+					); err != nil &&
+						!errors.Is(err, index.ErrEntryNotFound) {
 						return err
 					}
 
@@ -347,14 +368,14 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					if _, err = w.Add(filepath); err != nil {
 						return err
 					}
+					// TODO: mark in index
 
-					// Inserted / Modified by them, deleted by us
+				// Inserted / Modified by them, deleted by us
 				case (theirAction == merkletrie.Insert || theirAction == merkletrie.Modify) && ourAction == merkletrie.Delete:
 					dstFile, err := w.Filesystem.Create(filepath)
 					if err != nil {
 						return err
 					}
-					var theirsReader io.ReadCloser
 					theirsReader, err = theirs.Reader()
 					if err != nil {
 						return err
@@ -365,12 +386,16 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 					if _, err = w.Add(filepath); err != nil {
 						return err
 					}
+					// TODO: mark in index
 				}
 			}
-
 		}
 
 		if mergeHasConflict {
+			err = r.Storer.SetReference(plumbing.NewHashReference(MERGE_HEAD, ref.Hash()))
+			if err != nil {
+				return err
+			}
 			return ErrMergeConflict
 		}
 
@@ -385,13 +410,20 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 
 		var newHash plumbing.Hash
 		newHash, err = w.Commit(
-			fmt.Sprintf("Merge ... with %s", ref.Name()),
+			fmt.Sprintf(
+				"Merge %s with %s",
+				plumbing.NewBranchReferenceName(head.Name().Short()),
+				ref.Name(),
+			),
 			&git.CommitOptions{
 				Author:    &oursCommit.Author,
 				Committer: &oursCommit.Committer,
 				Parents:   []plumbing.Hash{oursCommit.Hash, theirsCommit.Hash},
 			},
 		)
+		if err != nil {
+			return err
+		}
 
 		var newCommit *object.Commit
 		newCommit, err = r.CommitObject(newHash)
@@ -412,7 +444,11 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 	return err
 }
 
-func isFastForward(s storer.EncodedObjectStorer, old, newHash plumbing.Hash, earliestShallow *plumbing.Hash) (bool, error) {
+func isFastForward(
+	s storer.EncodedObjectStorer,
+	old, newHash plumbing.Hash,
+	earliestShallow *plumbing.Hash,
+) (bool, error) {
 	c, err := object.GetCommit(s, newHash)
 	if err != nil {
 		return false, err

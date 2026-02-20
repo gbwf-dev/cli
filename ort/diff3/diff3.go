@@ -20,8 +20,11 @@ import (
 )
 
 const (
-	ConflictOurMarker   = "<<<<<<<"
+	// ConflictOurMarker represents the git conflict marker that indicates our changes
+	ConflictOurMarker = "<<<<<<<"
+	// Git conflict marker that split our changes from their changes
 	ConflictSplitMarker = "======="
+	// Git conflict marker that indicates their changes
 	ConflictTheirMarker = ">>>>>>>"
 )
 
@@ -63,7 +66,8 @@ func lcs(file1, file2 []string) *candidate {
 			j = file2indices[jX]
 
 			for s = r; s < len(candidates); s++ {
-				if (candidates[s].file2index < j) && ((s == len(candidates)-1) || (candidates[s+1].file2index > j)) {
+				if (candidates[s].file2index < j) &&
+					((s == len(candidates)-1) || (candidates[s+1].file2index > j)) {
 					break
 				}
 			}
@@ -110,9 +114,9 @@ type resultStruct struct {
 // differences between file1 and file2.
 func diffComm(file1, file2 []string) []*resultStruct {
 	var result []*resultStruct
-	var tail1 = len(file1)
-	var tail2 = len(file2)
-	var common = new(resultStruct)
+	tail1 := len(file1)
+	tail2 := len(file2)
+	common := new(resultStruct)
 
 	processCommon := func() {
 		if len(common.common) != 0 {
@@ -292,8 +296,10 @@ func diffIndices(file1, file2 []string) []*diffIndicesResult {
 	return result
 }
 
-type hunk [5]int
-type hunkList []*hunk
+type (
+	hunk     [5]int
+	hunkList []*hunk
+)
 
 func (h hunkList) Len() int           { return len(h) }
 func (h hunkList) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
@@ -327,7 +333,7 @@ func diff3MergeIndices(a, o, b []string) [][]int {
 	sort.Sort(hunkList(hunks))
 
 	var result [][]int
-	var commonOffset = 0
+	commonOffset := 0
 	copyCommon := func(targetOffset int) {
 		if targetOffset > commonOffset {
 			result = append(result, []int{1, commonOffset, targetOffset - commonOffset})
@@ -383,10 +389,12 @@ func diff3MergeIndices(a, o, b []string) [][]int {
 			aRhs := regions[0][1] + (regionRhs - regions[0][3])
 			bLhs := regions[2][0] + (regionLhs - regions[2][2])
 			bRhs := regions[2][1] + (regionRhs - regions[2][3])
-			result = append(result, []int{-1,
+			result = append(result, []int{
+				-1,
 				aLhs, aRhs - aLhs,
 				regionLhs, regionRhs - regionLhs,
-				bLhs, bRhs - bLhs})
+				bLhs, bRhs - bLhs,
+			})
 		}
 		commonOffset = regionRhs
 	}
@@ -437,8 +445,8 @@ func Diff3Merge(a, o, b []string, excludeFalseConflicts bool) []*Diff3MergeResul
 		if rec[2] != rec[6] {
 			return true
 		}
-		var aoff = rec[1]
-		var boff = rec[5]
+		aoff := rec[1]
+		boff := rec[5]
 		for j := 0; j < rec[2]; j++ {
 			if a[j+aoff] != b[j+boff] {
 				return true
@@ -448,8 +456,8 @@ func Diff3Merge(a, o, b []string, excludeFalseConflicts bool) []*Diff3MergeResul
 	}
 
 	for i := 0; i < len(indices); i++ {
-		var x = indices[i]
-		var side = x[0]
+		x := indices[i]
+		side := x[0]
 		if side == -1 {
 			if excludeFalseConflicts && !isTrueConflict(x) {
 				pushOk(files[0][x[1] : x[1]+x[2]])
@@ -477,7 +485,7 @@ func Diff3Merge(a, o, b []string, excludeFalseConflicts bool) []*Diff3MergeResul
 
 // MergeResult describes a merge result
 type MergeResult struct {
-	Conflicts bool      //Conflict indicates if there is any merge conflict
+	Conflicts bool      // Conflict indicates if there is any merge conflict
 	Result    io.Reader // returns a reader that contains the merge result
 }
 
@@ -505,19 +513,18 @@ func Merge(a, o, b io.Reader, detailed bool, labelA string, labelB string) (*Mer
 		return nil, err
 	}
 
-	var merger = Diff3Merge(al, ol, bl, true)
-	var conflicts = false
+	merger := Diff3Merge(al, ol, bl, true)
+	conflicts := false
 	var lines []string
 	for i := 0; i < len(merger); i++ {
-		var item = merger[i]
+		item := merger[i]
 		if item.ok != nil {
 			lines = append(lines, item.ok...)
-
 		} else {
 			if detailed {
-				var c = diffComm(item.conflict.a, item.conflict.b)
+				c := diffComm(item.conflict.a, item.conflict.b)
 				for j := 0; j < len(c); j++ {
-					var inner = c[j]
+					inner := c[j]
 					if inner.common != nil {
 						lines = append(lines, inner.common...)
 					} else {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,7 +10,6 @@ import (
 	"gbwf/manifest"
 	"gbwf/ort"
 	"gbwf/source"
-
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/go-git/go-billy/v6/memfs"
 	"github.com/go-git/go-billy/v6/osfs"
@@ -49,7 +49,8 @@ const (
 func init() {
 	rootCmd.AddCommand(initCmd)
 	initCmd.Flags().StringP(ManifestFlag, string(ManifestFlag[0]), Manifest, "sets the manifest")
-	initCmd.Flags().Bool(DryRunFlag, DryRun, "perform a trial run with no changes made to filesystem")
+	initCmd.Flags().
+		Bool(DryRunFlag, DryRun, "perform a trial run with no changes made to filesystem")
 	initCmd.Flags().Bool(VerboseFlag, Verbose, "runs in verbose mode")
 }
 
@@ -207,12 +208,15 @@ func RunE(cmd *cobra.Command, args []string) error {
 			RemoteName: plugin.Remote.Name,
 			Progress:   progress,
 		})
-		if err != nil && err != git.NoErrAlreadyUpToDate {
+		if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return err
 		}
 
 		var pluginRef *plumbing.Reference
-		pluginRef, err = repo.Reference(plumbing.NewRemoteReferenceName(remote.Config().Name, plugin.Remote.Ref), true)
+		pluginRef, err = repo.Reference(
+			plumbing.NewRemoteReferenceName(remote.Config().Name, plugin.Remote.Ref),
+			true,
+		)
 		if err != nil {
 			return err
 		}

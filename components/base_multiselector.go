@@ -2,9 +2,9 @@ package components
 
 import (
 	"fmt"
-	"gbwf/manifest"
 	"io"
 
+	"gbwf/manifest"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -38,7 +38,6 @@ func (mbd multiBaseItemDelegate) Render(w io.Writer, m list.Model, index int, li
 	}
 
 	_, _ = fmt.Fprint(w, fn(char, item.Name))
-
 }
 
 func NewBaseMultiSelector(bases ...manifest.Base) *BaseMultiSelector {
@@ -65,14 +64,12 @@ func (BaseMultiSelector) Init() tea.Cmd { return nil }
 
 func (m *BaseMultiSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-
 	case tea.WindowSizeMsg:
 		m.list.SetSize(msg.Width, (msg.Height/2)-2)
 		return m, nil
 
 	case tea.KeyMsg:
 		switch msg.Type {
-
 		case tea.KeyCtrlC, tea.KeyCtrlD, tea.KeyEsc:
 			return m, tea.Quit
 

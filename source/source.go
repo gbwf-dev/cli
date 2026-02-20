@@ -11,17 +11,22 @@ import (
 type Source string
 
 const (
-	HTTP  Source = "http"
+	// HTTP source driver identifying network resources
+	HTTP Source = "http"
+	// HTTPS source driver identifying secure network resources
 	HTTPS Source = "https"
-	File  Source = "file"
+	// File source driver identifying local files
+	File Source = "file"
 )
 
+// Driver splits a raw string with source://path format separating the source from the path
 type Driver struct {
 	Raw    string
 	Source Source
 	Path   string
 }
 
+// Extract parse a raw string into a source.Driver
 func Extract(raw string) (*Driver, error) {
 	src, path, found := strings.Cut(raw, "://")
 	if !found {
@@ -42,6 +47,7 @@ func Extract(raw string) (*Driver, error) {
 	}
 }
 
+// Resolve resolves a raw string into a  Reader by parsing it into a source.Driver
 func Resolve(source string) (reader io.ReadCloser, err error) {
 	var driver *Driver
 	driver, err = Extract(source)
