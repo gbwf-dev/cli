@@ -7,12 +7,3 @@ linters:
     - ineffassign
     - unused
     # - revive
-
-formatters:
-  enable:
-    - gci
-    - gofmt
-    - gofumpt
-    - goimports
-    - golines
-    - swaggo

@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"gbwf/ort/diff3"
+
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/format/index"
@@ -36,23 +37,24 @@ type MergeOptions struct {
 }
 
 func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
+	// Check strategy before moving HEAD
+	if opts.Strategy != OrtMerge &&
+		opts.Strategy != FastForwardMerge &&
+		opts.Strategy != FastForwardOnly {
+		return git.ErrUnsupportedMergeStrategy
+	}
+
 	head, err := r.Head()
 	if err != nil {
 		return err
 	}
 
-	theirsCommit, err := r.CommitObject(ref.Hash())
+	theirCommit, err := r.CommitObject(ref.Hash())
 	if err != nil {
 		return err
 	}
 
-	oursCommit, err := r.CommitObject(head.Hash())
-	if err != nil {
-		return err
-	}
-
-	var patch *object.Patch
-	patch, err = oursCommit.Patch(theirsCommit)
+	ourCommit, err := r.CommitObject(head.Hash())
 	if err != nil {
 		return err
 	}
@@ -69,386 +71,395 @@ func Merge(r *git.Repository, ref plumbing.Reference, opts MergeOptions) error {
 		return err
 	}
 
-	switch opts.Strategy {
-	case FastForwardOnly:
-		if !ff {
-			return git.ErrFastForwardMergeNotPossible
+	var patch *object.Patch
+	// All strategies allow FF unless explicitly disabled
+	if ff {
+		patch, err = ourCommit.Patch(theirCommit)
+		if err != nil {
+			return err
 		}
-		_, _ = fmt.Fprintln(opts.Progress, patch.Stats())
-		return r.Storer.SetReference(plumbing.NewHashReference(head.Name(), ref.Hash()))
 
-	case FastForwardMerge:
-		if ff {
-			_, _ = fmt.Fprintf(
-				opts.Progress,
+		if opts.Progress != nil {
+			_, _ = fmt.Fprintf(opts.Progress,
 				"Updating %s...%s\nFast-forward\n%s",
 				head.Hash().String()[:7],
 				ref.Hash().String()[:7],
-				patch.Stats(),
-			)
-			return r.Storer.SetReference(plumbing.NewHashReference(head.Name(), ref.Hash()))
+				patch.Stats())
 		}
-		fallthrough
+		return r.Storer.SetReference(plumbing.NewHashReference(head.Name(), ref.Hash()))
+	}
 
-	case OrtMerge:
-		baseCommits, err := oursCommit.MergeBase(theirsCommit)
-		if err != nil {
-			return err
+	if opts.Strategy == FastForwardOnly {
+		return git.ErrFastForwardMergeNotPossible
+	}
+
+	// Find common bases to merge from
+	baseCommits, err := ourCommit.MergeBase(theirCommit)
+	if err != nil {
+		return err
+	}
+
+	if len(baseCommits) < 1 {
+		return ErrUnrelatedHistories
+	}
+	// TODO: recursive merging
+
+	baseTree, err := baseCommits[0].Tree()
+	if err != nil {
+		return err
+	}
+
+	ourTree, err := ourCommit.Tree()
+	if err != nil {
+		return err
+	}
+
+	theirTree, err := theirCommit.Tree()
+	if err != nil {
+		return err
+	}
+
+	baseToOur, err := baseTree.Diff(ourTree)
+	if err != nil {
+		return err
+	}
+
+	baseToTheir, err := baseTree.Diff(theirTree)
+	if err != nil {
+		return err
+	}
+
+	// Prepare changes per files using filename as keys
+	changes := make(map[string]struct {
+		ours   *object.Change
+		theirs *object.Change
+	})
+
+	for _, change := range baseToOur {
+		path := change.To.Name
+		// If it was deleted find its name using .From
+		if path == "" {
+			path = change.From.Name
 		}
+		pair := changes[path]
+		pair.ours = change
+		changes[path] = pair
+	}
 
-		if len(baseCommits) < 1 {
-			return ErrUnrelatedHistories
+	for _, change := range baseToTheir {
+		path := change.To.Name
+		if path == "" {
+			path = change.From.Name
 		}
+		pair := changes[path]
+		pair.theirs = change
+		changes[path] = pair
+	}
 
-		baseTree, err := baseCommits[0].Tree()
-		if err != nil {
-			return err
-		}
+	w, err := r.Worktree()
+	if err != nil {
+		return err
+	}
 
-		oursTree, err := oursCommit.Tree()
-		if err != nil {
-			return err
-		}
+	mergeHasConflict := false
 
-		theirsTree, err := theirsCommit.Tree()
-		if err != nil {
-			return err
-		}
+	for filepath, pair := range changes {
+		var baseFile, ourFile, theirFile *object.File
+		var baseReader, ourReader, theirReader io.ReadCloser
 
-		baseToOurs, err := baseTree.Diff(oursTree)
-		if err != nil {
-			return err
-		}
-
-		baseToTheirs, err := baseTree.Diff(theirsTree)
-		if err != nil {
-			return err
-		}
-
-		changes := make(map[string]struct {
-			ours   *object.Change
-			theirs *object.Change
-		})
-
-		for _, change := range baseToOurs {
-			path := change.To.Name
-			if path == "" {
-				path = change.From.Name
-			}
-			pair := changes[path]
-			pair.ours = change
-			changes[path] = pair
-		}
-
-		for _, change := range baseToTheirs {
-			path := change.To.Name
-			if path == "" {
-				path = change.From.Name
-			}
-			pair := changes[path]
-			pair.theirs = change
-			changes[path] = pair
-		}
-
-		w, err := r.Worktree()
-		if err != nil {
-			return err
-		}
-
-		mergeHasConflict := false
-
-		for filepath, pair := range changes {
-			var base, ours, theirs *object.File
-			var baseReader, oursReader, theirsReader io.ReadCloser
-
-			// Only our file has changed
-			if pair.ours != nil && pair.theirs == nil {
-				action, err := pair.ours.Action()
-				if err != nil {
-					return err
-				}
-
-				switch action {
-				case merkletrie.Insert, merkletrie.Modify:
-					_, ours, err = pair.ours.Files()
-					if err != nil {
-						return err
-					}
-
-					oursReader, err = ours.Reader()
-					if err != nil {
-						return err
-					}
-
-					var dst io.Writer
-					dst, err = w.Filesystem.Create(filepath)
-					if err != nil {
-						return err
-					}
-					if _, err = io.Copy(dst, oursReader); err != nil {
-						return err
-					}
-					if _, err = w.Add(filepath); err != nil {
-						return err
-					}
-
-				// Our file was deleted
-				case merkletrie.Delete:
-					// if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
-					// 	return err
-					// }
-					if _, err = w.Remove(
-						filepath,
-					); err != nil &&
-						!errors.Is(err, index.ErrEntryNotFound) {
-						return err
-					}
-				}
-			}
-
-			// Only their file has changed
-			if pair.ours == nil && pair.theirs != nil {
-				action, err := pair.theirs.Action()
-				if err != nil {
-					return err
-				}
-
-				switch action {
-				case merkletrie.Insert, merkletrie.Modify:
-					_, theirs, err = pair.theirs.Files()
-					if err != nil {
-						return err
-					}
-
-					theirsReader, err = theirs.Reader()
-					if err != nil {
-						return err
-					}
-
-					var dst io.Writer
-					dst, err := w.Filesystem.Create(filepath)
-					if err != nil {
-						return err
-					}
-					if _, err = io.Copy(dst, theirsReader); err != nil {
-						return err
-					}
-					if _, err = w.Add(filepath); err != nil {
-						return err
-					}
-
-				// Their file has been deleted
-				case merkletrie.Delete:
-					// if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
-					// 	return err
-					// }
-
-					if _, err = w.Remove(
-						filepath,
-					); err != nil &&
-						!errors.Is(err, index.ErrEntryNotFound) {
-						return err
-					}
-				}
-			}
-
-			// Both changed the file
-			if pair.ours != nil && pair.theirs != nil {
-				base, ours, err = pair.ours.Files()
-				if err != nil {
-					return err
-				}
-				_, theirs, err = pair.theirs.Files()
-				if err != nil {
-					return err
-				}
-
-				var ourAction, theirAction merkletrie.Action
-				ourAction, err = pair.ours.Action()
-				if err != nil {
-					return err
-				}
-
-				theirAction, err = pair.theirs.Action()
-				if err != nil {
-					return err
-				}
-
-				switch {
-				// Added or Modified by both
-				case ourAction == merkletrie.Modify && theirAction == merkletrie.Modify,
-					ourAction == merkletrie.Insert && theirAction == merkletrie.Insert:
-
-					//  If they made the same changes
-					if ours.Hash == theirs.Hash {
-						continue // Skip
-					}
-
-					baseReader, err = base.Reader()
-					if err != nil {
-						return err
-					}
-					defer func() { _ = baseReader.Close() }()
-
-					var oursReader io.ReadCloser
-					oursReader, err = ours.Reader()
-					if err != nil {
-						return err
-					}
-					defer func() { _ = oursReader.Close() }()
-
-					_, theirs, err = pair.theirs.Files()
-					if err != nil {
-						return err
-					}
-
-					theirsReader, err = theirs.Reader()
-					if err != nil {
-						return err
-					}
-					defer func() { _ = theirsReader.Close() }()
-
-					mergeResult, err := diff3.Merge(
-						oursReader,
-						baseReader,
-						theirsReader,
-						true,
-						head.Name().Short(),
-						ref.Name().Short(),
-					)
-					if err != nil {
-						return err
-					}
-
-					file, err := w.Filesystem.Create(filepath)
-					if err != nil {
-						return err
-					}
-					defer func() { _ = file.Close() }()
-
-					if _, err = io.Copy(file, mergeResult.Result); err != nil {
-						return err
-					}
-
-					if !mergeResult.Conflicts {
-						if _, err = w.Add(filepath); err != nil {
-							return err
-						}
-					}
-
-					mergeHasConflict = mergeHasConflict || mergeResult.Conflicts
-
-				// Deleted by both
-				case ourAction == merkletrie.Delete && theirAction == merkletrie.Delete:
-					// if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
-					// 	return err
-					// }
-					if _, err = w.Remove(
-						filepath,
-					); err != nil &&
-						!errors.Is(err, index.ErrEntryNotFound) {
-						return err
-					}
-
-					// Inserted / Modified by us, deleted by them
-				case (ourAction == merkletrie.Insert || ourAction == merkletrie.Modify) && theirAction == merkletrie.Delete:
-					var dst io.Writer
-					dst, err = w.Filesystem.Create(filepath)
-					if err != nil {
-						return err
-					}
-
-					oursReader, err = ours.Reader()
-					if err != nil {
-						return err
-					}
-					if _, err = io.Copy(dst, oursReader); err != nil {
-						return err
-					}
-					if _, err = w.Add(filepath); err != nil {
-						return err
-					}
-					// TODO: mark in index
-
-				// Inserted / Modified by them, deleted by us
-				case (theirAction == merkletrie.Insert || theirAction == merkletrie.Modify) && ourAction == merkletrie.Delete:
-					dstFile, err := w.Filesystem.Create(filepath)
-					if err != nil {
-						return err
-					}
-					theirsReader, err = theirs.Reader()
-					if err != nil {
-						return err
-					}
-					if _, err = io.Copy(dstFile, theirsReader); err != nil {
-						return err
-					}
-					if _, err = w.Add(filepath); err != nil {
-						return err
-					}
-					// TODO: mark in index
-				}
-			}
-		}
-
-		if mergeHasConflict {
-			err = r.Storer.SetReference(plumbing.NewHashReference(MERGE_HEAD, ref.Hash()))
+		switch {
+		// If only our file has changed
+		case pair.ours != nil && pair.theirs == nil:
+			action, err := pair.ours.Action()
 			if err != nil {
 				return err
 			}
-			return ErrMergeConflict
-		}
 
-		status, err := w.Status()
+			switch action {
+			// Our file was created or modified
+			case merkletrie.Insert, merkletrie.Modify:
+				_, ourFile, err = pair.ours.Files()
+				if err != nil {
+					return err
+				}
+
+				ourReader, err = ourFile.Reader()
+				if err != nil {
+					return err
+				}
+
+				var dst io.WriteCloser
+				dst, err = w.Filesystem.Create(filepath)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = dst.Close() }()
+
+				if _, err = io.Copy(dst, ourReader); err != nil {
+					return err
+				}
+
+				if _, err = w.Add(filepath); err != nil {
+					return err
+				}
+
+			// Our file was deleted
+			case merkletrie.Delete:
+				// if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
+				// 	return err
+				// }
+
+				// Remove file from index and filesystem, noop if already deleted
+				if _, err = w.Remove(filepath); err != nil && !errors.Is(err, index.ErrEntryNotFound) {
+					return err
+				}
+			}
+
+		case pair.ours == nil && pair.theirs != nil:
+			action, err := pair.theirs.Action()
+			if err != nil {
+				return err
+			}
+
+			switch action {
+			// Their file was created or inserted
+			case merkletrie.Insert, merkletrie.Modify:
+				_, theirFile, err = pair.theirs.Files()
+				if err != nil {
+					return err
+				}
+
+				theirReader, err = theirFile.Reader()
+				if err != nil {
+					return err
+				}
+
+				var dst io.WriteCloser
+				dst, err := w.Filesystem.Create(filepath)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = dst.Close() }()
+
+				if _, err = io.Copy(dst, theirReader); err != nil {
+					return err
+				}
+
+				if _, err = w.Add(filepath); err != nil {
+					return err
+				}
+
+			// Their file has been deleted
+			case merkletrie.Delete:
+				// if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
+				// 	return err
+				// }
+
+				if _, err = w.Remove(filepath); err != nil && !errors.Is(err, index.ErrEntryNotFound) {
+					return err
+				}
+			}
+
+		// If both file changed Three Way Merging is needed
+		// Note: Maybe use the "default" keyword
+		case pair.ours != nil && pair.theirs != nil:
+
+			baseFile, ourFile, err = pair.ours.Files()
+			if err != nil {
+				return err
+			}
+
+			// Ignore second base as it should the same
+			_, theirFile, err = pair.theirs.Files()
+			if err != nil {
+				return err
+			}
+
+			var ourAction, theirAction merkletrie.Action
+			ourAction, err = pair.ours.Action()
+			if err != nil {
+				return err
+			}
+
+			theirAction, err = pair.theirs.Action()
+			if err != nil {
+				return err
+			}
+
+			switch {
+			// Added or Modified by both
+			case ourAction == merkletrie.Modify && theirAction == merkletrie.Modify,
+				ourAction == merkletrie.Insert && theirAction == merkletrie.Insert:
+
+				// If they made the same changes
+				if ourFile.Hash == theirFile.Hash {
+					if _, err = w.Add(filepath); err != nil {
+						return err
+					}
+					continue // Skip
+				}
+
+				baseReader, err = baseFile.Reader()
+				if err != nil {
+					return err
+				}
+				defer func() { _ = baseReader.Close() }()
+
+				ourReader, err = ourFile.Reader()
+				if err != nil {
+					return err
+				}
+				defer func() { _ = ourReader.Close() }()
+
+				_, theirFile, err = pair.theirs.Files()
+				if err != nil {
+					return err
+				}
+
+				theirReader, err = theirFile.Reader()
+				if err != nil {
+					return err
+				}
+				defer func() { _ = theirReader.Close() }()
+
+				mergeResult, err := diff3.Merge(
+					ourReader,
+					baseReader,
+					theirReader,
+					true,
+					head.Name().Short(),
+					ref.Name().Short(),
+				)
+				if err != nil {
+					return err
+				}
+
+				file, err := w.Filesystem.Create(filepath)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = file.Close() }()
+
+				if _, err = io.Copy(file, mergeResult.Result); err != nil {
+					return err
+				}
+
+				mergeHasConflict = mergeHasConflict || mergeResult.Conflicts
+
+				if !mergeResult.Conflicts {
+					if _, err = w.Add(filepath); err != nil {
+						return err
+					}
+				}
+
+			// Deleted by both
+			case ourAction == merkletrie.Delete && theirAction == merkletrie.Delete:
+				// if err = w.Filesystem.Remove(filepath); err != nil && !os.IsNotExist(err) {
+				// 	return err
+				// }
+				if _, err = w.Remove(
+					filepath,
+				); err != nil &&
+					!errors.Is(err, index.ErrEntryNotFound) {
+					return err
+				}
+
+				// Inserted / Modified by us, deleted by them
+			case (ourAction == merkletrie.Insert || ourAction == merkletrie.Modify) && theirAction == merkletrie.Delete:
+				var dst io.Writer
+				dst, err = w.Filesystem.Create(filepath)
+				if err != nil {
+					return err
+				}
+
+				ourReader, err = ourFile.Reader()
+				if err != nil {
+					return err
+				}
+
+				if _, err = io.Copy(dst, ourReader); err != nil {
+					return err
+				}
+
+				if _, err = w.Add(filepath); err != nil {
+					return err
+				}
+				// TODO: mark in index
+
+			// Inserted / Modified by them, deleted by us
+			case (theirAction == merkletrie.Insert || theirAction == merkletrie.Modify) && ourAction == merkletrie.Delete:
+				dstFile, err := w.Filesystem.Create(filepath)
+				if err != nil {
+					return err
+				}
+				theirReader, err = theirFile.Reader()
+				if err != nil {
+					return err
+				}
+				if _, err = io.Copy(dstFile, theirReader); err != nil {
+					return err
+				}
+				if _, err = w.Add(filepath); err != nil {
+					return err
+				}
+				// TODO: mark in index
+			}
+		}
+	}
+
+	if mergeHasConflict {
+		err = r.Storer.SetReference(plumbing.NewHashReference(MERGE_HEAD, ref.Hash()))
 		if err != nil {
 			return err
 		}
+		return ErrMergeConflict
+	}
 
-		if status.IsClean() {
-			return nil
-		}
+	status, err := w.Status()
+	if err != nil {
+		return err
+	}
 
-		var newHash plumbing.Hash
-		newHash, err = w.Commit(
-			fmt.Sprintf(
-				"Merge %s with %s",
-				plumbing.NewBranchReferenceName(head.Name().Short()),
-				ref.Name(),
-			),
-			&git.CommitOptions{
-				Author:    &oursCommit.Author,
-				Committer: &oursCommit.Committer,
-				Parents:   []plumbing.Hash{oursCommit.Hash, theirsCommit.Hash},
-			},
-		)
-		if err != nil {
-			return err
-		}
+	if status.IsClean() {
+		return nil
+	}
 
-		var newCommit *object.Commit
-		newCommit, err = r.CommitObject(newHash)
-		if err != nil {
-			return err
-		}
+	var newHash plumbing.Hash
+	newHash, err = w.Commit(
+		fmt.Sprintf(
+			"Merge %s with %s",
+			plumbing.NewBranchReferenceName(head.Name().Short()),
+			ref.Name(),
+		),
+		&git.CommitOptions{
+			Author:    &ourCommit.Author,
+			Committer: &ourCommit.Committer,
+			Parents:   []plumbing.Hash{ourCommit.Hash, theirCommit.Hash},
+		},
+	)
+	if err != nil {
+		return err
+	}
 
-		patch, err = oursCommit.Patch(newCommit)
-		if err != nil {
-			return err
-		}
+	var newCommit *object.Commit
+	newCommit, err = r.CommitObject(newHash)
+	if err != nil {
+		return err
+	}
 
+	patch, err = ourCommit.Patch(newCommit)
+	if err != nil {
+		return err
+	}
+
+	if opts.Progress != nil {
 		_, _ = fmt.Fprintf(opts.Progress, "Merge made by the 'ort' strategy.\n%s", patch.Stats())
-	default:
-		return git.ErrUnsupportedMergeStrategy
 	}
 
 	return err
 }
 
-func isFastForward(
-	s storer.EncodedObjectStorer,
-	old, newHash plumbing.Hash,
-	earliestShallow *plumbing.Hash,
-) (bool, error) {
+func isFastForward(s storer.EncodedObjectStorer, old, newHash plumbing.Hash, earliestShallow *plumbing.Hash) (bool, error) {
 	c, err := object.GetCommit(s, newHash)
 	if err != nil {
 		return false, err
