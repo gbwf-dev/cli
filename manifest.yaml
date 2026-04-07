@@ -23,6 +23,13 @@ base:
       url: https://github.com/gbwf-dev/solid.git
       ref: master
 
+  - name: "@inertia/solid-js"
+    color: 4 # Blue
+    remote:
+      name: "plugin-inertia-solid"
+      url: https://github.com/gbwf-dev/solid.git
+      ref: inertia
+
   - name: Tanstack Solid Router
     remote:
       url: https://github.com/gbwf-dev/solid.git
